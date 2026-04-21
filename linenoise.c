@@ -135,6 +135,7 @@ static int mlmode = 0;  /* Multi line mode. Default is single line. */
 static int atexit_registered = 0; /* Register atexit just 1 time. */
 static int history_max_len = LINENOISE_DEFAULT_HISTORY_MAX_LEN;
 static int history_len = 0;
+static int history_head = 0; /* Index of the oldest element. */
 static char **history = NULL;
 
 /* =========================== UTF-8 support ================================ */
@@ -1201,8 +1202,11 @@ void linenoiseEditHistoryNext(struct linenoiseState *l, int dir) {
     if (history_len > 1) {
         /* Update the current history entry before to
          * overwrite it with the next one. */
-        free(history[history_len - 1 - l->history_index]);
-        history[history_len - 1 - l->history_index] = strdup(l->buf);
+        int cur_idx = (history_head + history_len - 1 - l->history_index) % history_max_len;
+        if (cur_idx < 0) cur_idx += history_max_len;
+
+        free(history[cur_idx]);
+        history[cur_idx] = strdup(l->buf);
         /* Show the new entry */
         l->history_index += (dir == LINENOISE_HISTORY_PREV) ? 1 : -1;
         if (l->history_index < 0) {
@@ -1212,7 +1216,10 @@ void linenoiseEditHistoryNext(struct linenoiseState *l, int dir) {
             l->history_index = history_len-1;
             return;
         }
-        strncpy(l->buf,history[history_len - 1 - l->history_index],l->buflen);
+        int next_idx = (history_head + history_len - 1 - l->history_index) % history_max_len;
+        if (next_idx < 0) next_idx += history_max_len;
+
+        strncpy(l->buf,history[next_idx],l->buflen);
         l->buf[l->buflen-1] = '\0';
         l->len = l->pos = strlen(l->buf);
         refreshLine(l);
@@ -1373,7 +1380,8 @@ char *linenoiseEditFeed(struct linenoiseState *l) {
     switch(c) {
     case ENTER:    /* enter */
         history_len--;
-        free(history[history_len]);
+        int last_idx = (history_head + history_len) % history_max_len;
+        free(history[last_idx]);
         if (mlmode) linenoiseEditMoveEnd(l);
         if (hintsCallback) {
             /* Force a refresh without hints to leave the previous
@@ -1397,7 +1405,8 @@ char *linenoiseEditFeed(struct linenoiseState *l) {
             linenoiseEditDelete(l);
         } else {
             history_len--;
-            free(history[history_len]);
+            int del_idx = (history_head + history_len) % history_max_len;
+            free(history[del_idx]);
             errno = ENOENT;
             return NULL;
         }
@@ -1672,7 +1681,7 @@ static void freeHistory(void) {
         int j;
 
         for (j = 0; j < history_len; j++)
-            free(history[j]);
+            free(history[(history_head + j) % history_max_len]);
         free(history);
     }
 }
@@ -1684,12 +1693,8 @@ static void linenoiseAtExit(void) {
 }
 
 /* This is the API call to add a new entry in the linenoise history.
- * It uses a fixed array of char pointers that are shifted (memmoved)
- * when the history max length is reached in order to remove the older
- * entry and make room for the new one, so it is not exactly suitable for huge
- * histories, but will work well for a few hundred of entries.
- *
- * Using a circular buffer is smarter, but a bit more complex to handle. */
+ * It uses a circular buffer to avoid shifting the entire array when it
+ * reaches its maximum size. */
 int linenoiseHistoryAdd(const char *line) {
     char *linecopy;
 
@@ -1700,22 +1705,30 @@ int linenoiseHistoryAdd(const char *line) {
         history = malloc(sizeof(char*)*history_max_len);
         if (history == NULL) return 0;
         memset(history,0,(sizeof(char*)*history_max_len));
+        history_head = 0;
     }
 
-    /* Don't add duplicated lines. */
-    if (history_len && !strcmp(history[history_len-1], line)) return 0;
+    /* Don't add duplicated lines if they match the most recent entry. */
+    if (history_len > 0) {
+        int last_idx = (history_head + history_len - 1) % history_max_len;
+        if (!strcmp(history[last_idx], line)) return 0;
+    }
 
     /* Add an heap allocated copy of the line in the history.
-     * If we reached the max length, remove the older line. */
+     * If we reached the max length, remove the older line by overwriting it. */
     linecopy = strdup(line);
     if (!linecopy) return 0;
+
     if (history_len == history_max_len) {
-        free(history[0]);
-        memmove(history,history+1,sizeof(char*)*(history_max_len-1));
-        history_len--;
+        /* Buffer is full, overwrite the oldest entry and advance head. */
+        free(history[history_head]);
+        history[history_head] = linecopy;
+        history_head = (history_head + 1) % history_max_len;
+    } else {
+        /* Buffer not yet full, just add to the end. */
+        history[(history_head + history_len) % history_max_len] = linecopy;
+        history_len++;
     }
-    history[history_len] = linecopy;
-    history_len++;
     return 1;
 }
 
@@ -1737,15 +1750,23 @@ int linenoiseHistorySetMaxLen(int len) {
         if (len < tocopy) {
             int j;
 
-            for (j = 0; j < tocopy-len; j++) free(history[j]);
+            for (j = 0; j < tocopy-len; j++) {
+                int idx = (history_head + j) % history_max_len;
+                free(history[idx]);
+            }
+            history_head = (history_head + (tocopy - len)) % history_max_len;
             tocopy = len;
         }
         memset(new,0,sizeof(char*)*len);
-        memcpy(new,history+(history_len-tocopy), sizeof(char*)*tocopy);
+        for (int j = 0; j < tocopy; j++) {
+            int idx = (history_head + j) % history_max_len;
+            new[j] = history[idx];
+        }
         free(history);
         history = new;
     }
     history_max_len = len;
+    history_head = 0;
     if (history_len > history_max_len)
         history_len = history_max_len;
     return 1;
@@ -1762,8 +1783,10 @@ int linenoiseHistorySave(const char *filename) {
     umask(old_umask);
     if (fp == NULL) return -1;
     fchmod(fileno(fp),S_IRUSR|S_IWUSR);
-    for (j = 0; j < history_len; j++)
-        fprintf(fp,"%s\n",history[j]);
+    for (j = 0; j < history_len; j++) {
+        int idx = (history_head + j) % history_max_len;
+        fprintf(fp,"%s\n",history[idx]);
+    }
     fclose(fp);
     return 0;
 }
