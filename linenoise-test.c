@@ -1239,6 +1239,45 @@ static void test_multiline_history(void) {
     test_end();
 }
 
+static void test_history_fill_to_max(void) {
+    if (test_start("History Fill To Max", "./linenoise-example") == -1) return;
+
+    /* Keep the history small so we can hit full-buffer behavior quickly.
+     * We use 4 to account for the temporary in-edit entry maintained by
+     * linenoise while navigating history. */
+    send_keys("/historylen 4");
+    send_keys(KEY_ENTER);
+
+    /* Add five entries: with max len = 4, we force one extra overflow and
+     * verify that only the newest committed entries are retained. */
+    send_keys("one");
+    send_keys(KEY_ENTER);
+    send_keys("two");
+    send_keys(KEY_ENTER);
+    send_keys("three");
+    send_keys(KEY_ENTER);
+    send_keys("four");
+    send_keys(KEY_ENTER);
+    send_keys("five");
+    send_keys(KEY_ENTER);
+
+    /* Navigate back through history: expected newest -> oldest kept. */
+    send_keys(KEY_UP);
+    assert_row_contains(0, "hello> five");
+
+    send_keys(KEY_UP);
+    assert_row_contains(0, "hello> four");
+
+    send_keys(KEY_UP);
+    assert_row_contains(0, "hello> three");
+
+    /* Going further up should stay on the oldest retained item. */
+    send_keys(KEY_UP);
+    assert_row_contains(0, "hello> three");
+
+    test_end();
+}
+
 static void test_tab_no_completions(void) {
     if (test_start("TAB With No Completions", "./linenoise-example") == -1) return;
 
@@ -1321,6 +1360,9 @@ int main(int argc, char **argv) {
     test_multiline_cursor_movement();
     test_multiline_utf8();
     test_multiline_history();
+
+    /* History behavior tests. */
+    test_history_fill_to_max();
 
     /* Summary. */
     printf("\n\x1b[1;35m");

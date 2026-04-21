@@ -138,6 +138,17 @@ static int history_len = 0;
 static int history_head = 0; /* Index of the oldest element. */
 static char **history = NULL;
 
+/* Helper to compute positive modulo for history indices. This ensures that
+ * expressions that may temporarily be negative are mapped to a valid index
+ * in the range [0, history_max_len-1]. */
+static int history_index(int idx) {
+    int m = history_max_len;
+    if (m <= 0) return 0;
+    int r = idx % m;
+    if (r < 0) r += m;
+    return r;
+}
+
 /* =========================== UTF-8 support ================================ */
 
 /* Return the number of bytes that compose the UTF-8 character starting at
@@ -1202,8 +1213,7 @@ void linenoiseEditHistoryNext(struct linenoiseState *l, int dir) {
     if (history_len > 1) {
         /* Update the current history entry before to
          * overwrite it with the next one. */
-        int cur_idx = (history_head + history_len - 1 - l->history_index) % history_max_len;
-        if (cur_idx < 0) cur_idx += history_max_len;
+        int cur_idx = history_index(history_head + history_len - 1 - l->history_index);
 
         free(history[cur_idx]);
         history[cur_idx] = strdup(l->buf);
@@ -1216,8 +1226,7 @@ void linenoiseEditHistoryNext(struct linenoiseState *l, int dir) {
             l->history_index = history_len-1;
             return;
         }
-        int next_idx = (history_head + history_len - 1 - l->history_index) % history_max_len;
-        if (next_idx < 0) next_idx += history_max_len;
+        int next_idx = history_index(history_head + history_len - 1 - l->history_index);
 
         strncpy(l->buf,history[next_idx],l->buflen);
         l->buf[l->buflen-1] = '\0';
@@ -1380,7 +1389,7 @@ char *linenoiseEditFeed(struct linenoiseState *l) {
     switch(c) {
     case ENTER:    /* enter */
         history_len--;
-        int last_idx = (history_head + history_len) % history_max_len;
+        int last_idx = history_index(history_head + history_len);
         free(history[last_idx]);
         if (mlmode) linenoiseEditMoveEnd(l);
         if (hintsCallback) {
@@ -1405,7 +1414,7 @@ char *linenoiseEditFeed(struct linenoiseState *l) {
             linenoiseEditDelete(l);
         } else {
             history_len--;
-            int del_idx = (history_head + history_len) % history_max_len;
+            int del_idx = history_index(history_head + history_len);
             free(history[del_idx]);
             errno = ENOENT;
             return NULL;
@@ -1681,7 +1690,7 @@ static void freeHistory(void) {
         int j;
 
         for (j = 0; j < history_len; j++)
-            free(history[(history_head + j) % history_max_len]);
+            free(history[history_index(history_head + j)]);
         free(history);
     }
 }
@@ -1710,7 +1719,7 @@ int linenoiseHistoryAdd(const char *line) {
 
     /* Don't add duplicated lines if they match the most recent entry. */
     if (history_len > 0) {
-        int last_idx = (history_head + history_len - 1) % history_max_len;
+        int last_idx = history_index(history_head + history_len - 1);
         if (!strcmp(history[last_idx], line)) return 0;
     }
 
@@ -1723,10 +1732,10 @@ int linenoiseHistoryAdd(const char *line) {
         /* Buffer is full, overwrite the oldest entry and advance head. */
         free(history[history_head]);
         history[history_head] = linecopy;
-        history_head = (history_head + 1) % history_max_len;
+        history_head = history_index(history_head + 1);
     } else {
         /* Buffer not yet full, just add to the end. */
-        history[(history_head + history_len) % history_max_len] = linecopy;
+        history[history_index(history_head + history_len)] = linecopy;
         history_len++;
     }
     return 1;
@@ -1751,15 +1760,15 @@ int linenoiseHistorySetMaxLen(int len) {
             int j;
 
             for (j = 0; j < tocopy-len; j++) {
-                int idx = (history_head + j) % history_max_len;
+                int idx = history_index(history_head + j);
                 free(history[idx]);
             }
-            history_head = (history_head + (tocopy - len)) % history_max_len;
+            history_head = history_index(history_head + (tocopy - len));
             tocopy = len;
         }
         memset(new,0,sizeof(char*)*len);
         for (int j = 0; j < tocopy; j++) {
-            int idx = (history_head + j) % history_max_len;
+            int idx = history_index(history_head + j);
             new[j] = history[idx];
         }
         free(history);
@@ -1784,7 +1793,7 @@ int linenoiseHistorySave(const char *filename) {
     if (fp == NULL) return -1;
     fchmod(fileno(fp),S_IRUSR|S_IWUSR);
     for (j = 0; j < history_len; j++) {
-        int idx = (history_head + j) % history_max_len;
+        int idx = history_index(history_head + j);
         fprintf(fp,"%s\n",history[idx]);
     }
     fclose(fp);
