@@ -138,10 +138,21 @@ static int history_len = 0;
 static int history_head = 0; /* Index of the oldest element. */
 static char **history = NULL;
 
-/* Helper to compute positive modulo for history indices. This ensures that
- * expressions that may temporarily be negative are mapped to a valid index
- * in the range [0, history_max_len-1]. */
-static int history_index(int idx) {
+/* Helper to compute positive modulo for history indices on the circular
+ * buffer. Maps `idx` into the valid range [0, history_max_len-1].
+ *
+ * Accepted input range: idx must lie within [-history_max_len, 2*history_max_len - 1].
+ * This covers every call site in this file (each computes head +/- an offset
+ * bounded by history_max_len), so a single correction step is sufficient.
+ * Values outside that range are still handled correctly by C's `%` semantics
+ * followed by the `+= m` fixup, but callers shouldn't rely on it.
+ *
+ * The `m <= 0` branch is a defensive no-op: `linenoiseHistoryAdd` already
+ * refuses to add entries when `history_max_len == 0`, so in practice this
+ * helper is never invoked with a non-positive modulus. Returning 0 keeps the
+ * helper total and avoids a division-by-zero trap if that invariant is ever
+ * broken by future changes. */
+static inline int history_index(int idx) {
     int m = history_max_len;
     if (m <= 0) return 0;
     int r = idx % m;
